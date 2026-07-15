@@ -75,6 +75,7 @@ let updated = draft.make()
 | --- | --- |
 | `@Draft` | Generates the nested `Draft` type and model conversion API. |
 | `@DraftDefault(value)` | Gives a draft field a default value and keeps its model type. |
+| `@DraftNested` | Edits a nested model through its own generated draft. |
 | `@DraftRequired` | Requires explicit input for an optional model property. |
 | `@DraftIgnored` | Excludes an instance stored property from the draft. |
 
@@ -108,6 +109,8 @@ Defining your own `init(draft:)` replaces the generated model initializer.
 | `var nickname: String? = "Guest"` | `var nickname: String? = "Guest"` | Optional with a model default. |
 | `@DraftDefault(20) var pageSize: Int` | `var pageSize: Int = 20` | Uses the explicit draft default. |
 | `@DraftDefault(1) let revision: Int` | `var revision: Int = 1` | Editable in the draft, assigned once to the model. |
+| `@DraftNested var author: Author` | `var author: Author.Draft = .init()` | Required recursively. |
+| `@DraftNested var author: Author?` | `var author: Author.Draft? = nil` | Optional; `nil` is valid. |
 | `@DraftIgnored var cache: String = ""` | Omitted | Restored from the model default. |
 | `let schemaVersion: Int = 1` | Omitted | Initialized constants are excluded. |
 | `static` or computed property | Omitted | Not part of model construction. |
@@ -190,6 +193,112 @@ let draft = Consent.Draft(from: model)
 
 draft.isComplete // true
 ```
+
+## Nested models
+
+Use `@DraftNested` when a property should be edited through the nested model's
+own draft instead of as one optional value. The nested model must also expose a
+generated `Draft` type.
+
+```swift
+@Draft
+struct Author: Equatable, Codable, Sendable {
+  var name: String
+  var biography: String?
+}
+
+@Draft
+struct Book: Equatable, Codable, Sendable {
+  var title: String
+
+  @DraftNested
+  var author: Author
+}
+```
+
+The non-optional model property becomes a non-optional empty nested draft:
+
+```swift
+var draft = Book.Draft()
+
+draft.author.name = "Taylor"
+draft.title = "Nested drafts"
+
+draft.isComplete // true
+draft.make()     // Book?
+```
+
+If the nested draft is incomplete, the parent reports its own field:
+
+```swift
+draft.author.unset(\.name)
+
+draft.missingFields == [.author] // true
+```
+
+An optional nested property becomes `Nested.Draft?`. `nil` is valid; once a
+nested draft is assigned, it must be complete.
+
+```swift
+@Draft
+struct Publication {
+  @DraftNested var editor: Author?
+}
+
+var draft = Publication.Draft()
+draft.make() // Publication(editor: nil)
+
+draft.editor = Author.Draft()
+draft.isComplete // false
+
+draft.editor?.name = "Morgan"
+draft.isComplete // true
+```
+
+Combine the macros when an optional nested value must be explicitly chosen:
+
+```swift
+@Draft
+struct Review {
+  @DraftRequired
+  @DraftNested
+  var reviewer: Author?
+}
+
+var draft = Review.Draft()
+draft.isComplete // false
+
+draft.reviewer = nil
+draft.isComplete // true: explicit nil is valid
+```
+
+Model initializers and `@DraftDefault` values are converted into nested drafts:
+
+```swift
+extension Author {
+  static let guest = Author(name: "Guest", biography: nil)
+  static let editor = Author(name: "Editor", biography: nil)
+}
+
+@Draft
+struct Credits {
+  @DraftNested
+  var author: Author = .guest
+
+  @DraftNested
+  @DraftDefault(Author.editor)
+  var editor: Author
+}
+
+let draft = Credits.Draft()
+draft.author.name // "Guest"
+draft.editor.name // "Editor"
+```
+
+`Draft(from:)` recursively seeds nested drafts, and generated model conversion
+recursively calls each nested draft's `make()`. A rejected nested value maps to
+the parent's `ValidationError.rejectedByModel`. A custom parent `init(draft:)`
+controls nested conversion itself.
 
 ## Default values and constants
 
@@ -603,6 +712,10 @@ An empty public draft cannot be completed externally if it contains a required n
 - Optional types are recognized syntactically as `T?`, `T!`, `Optional<T>`, or `Swift.Optional<T>`. An optional hidden behind a type alias is not recognized.
 - `@DraftDefault` accepts exactly one unlabeled expression and applies only to instance stored properties.
 - `@DraftDefault` cannot be used on an initialized `let`.
+- `@DraftNested` applies only to an instance stored property whose type exposes
+  a nested `Draft` API, normally by using `@Draft` on that model.
+- Nested collections are not inferred; `@DraftNested` operates on one model
+  value, optional or non-optional.
 - `@DraftIgnored` requires a model default or a custom `init(draft:)`.
 - A model cannot already declare a nested type or type alias named `Draft`.
 - `isComplete`, `missingFields`, `unset`, `make`, and `makeOrThrow` are reserved draft property names.

@@ -62,6 +62,40 @@ public struct DraftMacro: ExtensionMacro {
       let isIgnored = variable.hasDraftIgnoredAttribute
       let draftDefaultAttribute = variable.draftDefaultAttribute
       let explicitDraftDefault = variable.draftDefaultExpression
+      let draftNestedAttribute = variable.draftNestedAttribute
+
+      if let draftNestedAttribute {
+        if isIgnored {
+          context.diagnose(
+            Diagnostic(
+              node: Syntax(draftNestedAttribute),
+              message: DraftDiagnostic(
+                id: "nested-ignored-conflict",
+                message: "@DraftNested cannot be combined with @DraftIgnored"
+              )
+            )
+          )
+          hasErrors = true
+          continue
+        }
+
+        if variable.isTypeProperty
+          || !variable.bindings.contains(where: \.isStoredProperty)
+        {
+          context.diagnose(
+            Diagnostic(
+              node: Syntax(draftNestedAttribute),
+              message: DraftDiagnostic(
+                id: "nested-requires-instance-property",
+                message:
+                  "@DraftNested can only be attached to an instance stored property"
+              )
+            )
+          )
+          hasErrors = true
+          continue
+        }
+      }
 
       if let draftDefaultAttribute {
         if isIgnored {
@@ -241,6 +275,27 @@ public struct DraftMacro: ExtensionMacro {
         }
 
         let isModelOptional = propertyType.isOptionalType
+        let nestedModelType: TypeSyntax?
+        if let draftNestedAttribute {
+          let candidate = propertyType.optionalWrappedType ?? propertyType
+          guard candidate.isNominalTypeReference else {
+            context.diagnose(
+              Diagnostic(
+                node: Syntax(draftNestedAttribute),
+                message: DraftDiagnostic(
+                  id: "nested-model-type",
+                  message:
+                    "@DraftNested requires a model type with a nested Draft type"
+                )
+              )
+            )
+            hasErrors = true
+            continue
+          }
+          nestedModelType = candidate.trimmed
+        } else {
+          nestedModelType = nil
+        }
         let requiresExplicitValue =
           variable.hasDraftRequiredAttribute
           && isModelOptional
@@ -256,6 +311,7 @@ public struct DraftMacro: ExtensionMacro {
             modifiers: variable.draftPropertyModifiers,
             accessLevel: variable.draftDeclaredAccessLevel,
             isModelOptional: isModelOptional,
+            nestedModelType: nestedModelType,
             requiresExplicitValue: requiresExplicitValue,
             presenceName: nil,
             defaultExpression: defaultExpression,
@@ -468,7 +524,19 @@ public struct DraftMacro: ExtensionMacro {
       "\(raw: access.prefix)init(from model: \(modelType))"
     ) {
       for property in properties {
-        ExprSyntax("self.\(property.name) = model.\(property.name)")
+        if let nestedDraftType = property.nestedDraftType {
+          if property.isModelOptional {
+            ExprSyntax(
+              "self.\(property.name) = model.\(property.name).map { \(nestedDraftType)(from: $0) }"
+            )
+          } else {
+            ExprSyntax(
+              "self.\(property.name) = \(nestedDraftType)(from: model.\(property.name))"
+            )
+          }
+        } else {
+          ExprSyntax("self.\(property.name) = model.\(property.name)")
+        }
         if let presenceName = property.presenceName {
           ExprSyntax("self.\(presenceName) = true")
         }
@@ -481,7 +549,7 @@ public struct DraftMacro: ExtensionMacro {
     properties: [DraftProperty]
   ) throws -> VariableDeclSyntax {
     let requiredProperties = properties.filter {
-      $0.presenceName != nil || $0.requiresNonOptionalValue
+      $0.presenceName != nil || $0.requiresNonOptionalValue || $0.isNested
     }
 
     return try VariableDeclSyntax(
@@ -496,6 +564,18 @@ public struct DraftMacro: ExtensionMacro {
             ExprSyntax(
               "if !\(presenceName) { fields.insert(.\(property.name)) }"
             )
+          }
+
+          if property.isNested {
+            if property.isModelOptional {
+              ExprSyntax(
+                "if let \(property.name), !\(property.name).isComplete { fields.insert(.\(property.name)) }"
+              )
+            } else {
+              ExprSyntax(
+                "if !\(property.name).isComplete { fields.insert(.\(property.name)) }"
+              )
+            }
           } else if property.requiresNonOptionalValue {
             ExprSyntax(
               "if \(property.name) == nil { fields.insert(.\(property.name)) }"
@@ -574,6 +654,17 @@ public struct DraftMacro: ExtensionMacro {
       startingWith: "draft",
       avoiding: Set(properties.map(\.identifier))
     )
+    var generatedNames = Set(properties.map(\.identifier))
+    generatedNames.insert(draftParameter)
+    let nestedDraftName = uniqueName(
+      startingWith: "nestedDraft",
+      avoiding: generatedNames
+    )
+    generatedNames.insert(nestedDraftName)
+    let nestedModelName = uniqueName(
+      startingWith: "nestedModel",
+      avoiding: generatedNames
+    )
     let header =
       if draftParameter == "draft" {
         "\(modelAccess.prefix)init?(draft: Draft)"
@@ -588,6 +679,30 @@ public struct DraftMacro: ExtensionMacro {
             "guard \(raw: draftParameter).\(presenceName) else"
           ) {
             StmtSyntax("return nil")
+          }
+        }
+
+        if property.isNested {
+          if property.isModelOptional {
+            DeclSyntax("let \(property.name): \(property.type)")
+            ExprSyntax(
+              """
+              if let \(raw: nestedDraftName) = \(raw: draftParameter).\(property.name) {
+                guard let \(raw: nestedModelName) = \(raw: nestedDraftName).make() else {
+                  return nil
+                }
+                \(property.name) = \(raw: nestedModelName)
+              } else {
+                \(property.name) = nil
+              }
+              """
+            )
+          } else {
+            try GuardStmtSyntax(
+              "guard let \(property.name) = \(raw: draftParameter).\(property.name).make() else"
+            ) {
+              StmtSyntax("return nil")
+            }
           }
         } else if property.requiresNonOptionalValue {
           try GuardStmtSyntax(
@@ -826,6 +941,7 @@ private struct DraftProperty {
   let modifiers: DeclModifierListSyntax
   let accessLevel: DraftAccessLevel
   let isModelOptional: Bool
+  let nestedModelType: TypeSyntax?
   let requiresExplicitValue: Bool
   let presenceName: TokenSyntax?
   let defaultExpression: ExprSyntax?
@@ -839,25 +955,66 @@ private struct DraftProperty {
     defaultExpression != nil
   }
 
+  var isNested: Bool {
+    nestedModelType != nil
+  }
+
+  var nestedDraftType: TypeSyntax? {
+    nestedModelType.map {
+      TypeSyntax(
+        MemberTypeSyntax(
+          baseType: $0,
+          name: .identifier("Draft")
+        )
+      )
+    }
+  }
+
   var requiresNonOptionalValue: Bool {
-    !isModelOptional && !hasDefault
+    !isNested && !isModelOptional && !hasDefault
   }
 
   var usesDirectDraftValue: Bool {
-    isModelOptional || hasDefault
+    !isNested && (isModelOptional || hasDefault)
   }
 
   func declaration(modelType: TypeSyntax) -> VariableDeclSyntax {
-    let fieldType =
-      isModelOptional || hasDefault
-      ? type
-      : TypeSyntax(OptionalTypeSyntax(wrappedType: type))
-    let initialValue: ExprSyntax =
+    let fieldType: TypeSyntax
+    let initialValue: ExprSyntax
+
+    if let nestedDraftType {
+      fieldType =
+        isModelOptional
+        ? TypeSyntax(OptionalTypeSyntax(wrappedType: nestedDraftType))
+        : nestedDraftType
+
       if let defaultProviderName {
-        ExprSyntax("\(modelType).\(defaultProviderName)()")
+        if isModelOptional {
+          initialValue = ExprSyntax(
+            "\(modelType).\(defaultProviderName)().map { \(nestedDraftType)(from: $0) }"
+          )
+        } else {
+          initialValue = ExprSyntax(
+            "\(nestedDraftType)(from: \(modelType).\(defaultProviderName)())"
+          )
+        }
+      } else if isModelOptional {
+        initialValue = ExprSyntax(NilLiteralExprSyntax())
       } else {
-        ExprSyntax(NilLiteralExprSyntax())
+        initialValue = ExprSyntax("\(nestedDraftType)()")
       }
+    } else {
+      fieldType =
+        isModelOptional || hasDefault
+        ? type
+        : TypeSyntax(OptionalTypeSyntax(wrappedType: type))
+      initialValue =
+        if let defaultProviderName {
+          ExprSyntax("\(modelType).\(defaultProviderName)()")
+        } else {
+          ExprSyntax(NilLiteralExprSyntax())
+        }
+    }
     let accessorBlock: AccessorBlockSyntax? = presenceName.map { presenceName in
       AccessorBlockSyntax(
         accessors: .accessors(
@@ -912,6 +1069,7 @@ private struct DraftProperty {
       modifiers: modifiers,
       accessLevel: accessLevel,
       isModelOptional: isModelOptional,
+      nestedModelType: nestedModelType,
       requiresExplicitValue: requiresExplicitValue,
       presenceName: presenceName,
       defaultExpression: defaultExpression,
@@ -926,6 +1084,7 @@ private struct DraftProperty {
       modifiers: modifiers,
       accessLevel: accessLevel,
       isModelOptional: isModelOptional,
+      nestedModelType: nestedModelType,
       requiresExplicitValue: requiresExplicitValue,
       presenceName: presenceName,
       defaultExpression: defaultExpression,
@@ -1079,6 +1238,10 @@ extension VariableDeclSyntax {
     attribute(named: "DraftDefault")
   }
 
+  fileprivate var draftNestedAttribute: AttributeSyntax? {
+    attribute(named: "DraftNested")
+  }
+
   fileprivate var draftDefaultExpression: ExprSyntax? {
     guard
       let arguments = draftDefaultAttribute?.arguments,
@@ -1142,29 +1305,45 @@ extension TypeSyntax {
     }
   }
 
-  fileprivate var isOptionalType: Bool {
-    if self.is(OptionalTypeSyntax.self)
-      || self.is(ImplicitlyUnwrappedOptionalTypeSyntax.self)
-    {
-      return true
+  fileprivate var optionalWrappedType: TypeSyntax? {
+    if let optionalType = self.as(OptionalTypeSyntax.self) {
+      return optionalType.wrappedType
+    }
+
+    if let optionalType = self.as(ImplicitlyUnwrappedOptionalTypeSyntax.self) {
+      return optionalType.wrappedType
     }
 
     if let attributedType = self.as(AttributedTypeSyntax.self) {
-      return attributedType.baseType.isOptionalType
+      return attributedType.baseType.optionalWrappedType
     }
 
-    if let identifierType = self.as(IdentifierTypeSyntax.self) {
-      return identifierType.name.text == "Optional"
-        && identifierType.genericArgumentClause?.arguments.count == 1
+    if let identifierType = self.as(IdentifierTypeSyntax.self),
+      identifierType.name.text == "Optional",
+      let argument = identifierType.genericArgumentClause?.arguments.first,
+      case .type(let wrappedType) = argument.argument
+    {
+      return wrappedType
     }
 
-    if let memberType = self.as(MemberTypeSyntax.self) {
-      return memberType.name.text == "Optional"
-        && memberType.baseType.trimmedDescription == "Swift"
-        && memberType.genericArgumentClause?.arguments.count == 1
+    if let memberType = self.as(MemberTypeSyntax.self),
+      memberType.name.text == "Optional",
+      memberType.baseType.trimmedDescription == "Swift",
+      let argument = memberType.genericArgumentClause?.arguments.first,
+      case .type(let wrappedType) = argument.argument
+    {
+      return wrappedType
     }
 
-    return false
+    return nil
+  }
+
+  fileprivate var isOptionalType: Bool {
+    optionalWrappedType != nil
+  }
+
+  fileprivate var isNominalTypeReference: Bool {
+    self.is(IdentifierTypeSyntax.self) || self.is(MemberTypeSyntax.self)
   }
 }
 

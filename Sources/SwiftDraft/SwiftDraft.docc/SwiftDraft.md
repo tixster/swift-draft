@@ -9,7 +9,9 @@ property becomes a plain optional value. Model properties that are already
 optional keep their type and do not block model creation. Use
 ``DraftRequired()`` when a particular optional property must be explicitly set.
 Initialized mutable properties keep their type and initial value in the draft;
-use ``DraftDefault(_:)`` to provide or override that value explicitly.
+use ``DraftDefault(_:)`` to provide or override that value explicitly. Apply
+``DraftNested()`` to edit a model property recursively through its own generated
+draft.
 
 ```swift
 @Draft
@@ -36,6 +38,7 @@ not participate in editing.
 - ``Draft()``
 - ``DraftDefault(_:)``
 - ``DraftIgnored()``
+- ``DraftNested()``
 - ``DraftRequired()``
 
 ### Guides

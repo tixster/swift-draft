@@ -184,6 +184,90 @@ struct DraftMacroTests {
     )
   }
 
+  @Test("generates a recursively editable nested draft")
+  func nestedFieldExpansion() {
+    assertMacroExpansion(
+      """
+      @Draft
+      struct Book {
+        var title: String
+        @DraftNested let author: Author
+      }
+      """,
+      expandedSource: """
+        struct Book {
+          var title: String
+          let author: Author
+        }
+
+        extension Book {
+          struct Draft {
+            var title: String? = nil
+            var author: Author.Draft = Author.Draft()
+            enum Field: Hashable, Sendable {
+              case title
+              case author
+            }
+            enum ValidationError: Error, Equatable, Sendable {
+              case missingFields(Set<Field>)
+              case rejectedByModel
+            }
+            init() {
+            }
+            init(from model: Book) {
+              self.title = model.title
+              self.author = Author.Draft(from: model.author)
+            }
+            var missingFields: Set<Field> {
+              var fields: Set<Field> = []
+              if title == nil {
+                fields.insert(.title)
+              }
+              if !author.isComplete {
+                fields.insert(.author)
+              }
+              return fields
+            }
+            var isComplete: Bool {
+              missingFields.isEmpty
+            }
+            mutating func unset<DraftValue>(_ keyPath: WritableKeyPath<Self, DraftValue?>) {
+              self[keyPath: keyPath] = nil
+            }
+            func make() -> Book? {
+              try? makeOrThrow()
+            }
+            func makeOrThrow() throws -> Book {
+              let missingFields = missingFields
+              guard missingFields.isEmpty else {
+                throw ValidationError.missingFields(missingFields)
+              }
+              guard let model = Book(draft: self) else {
+                throw ValidationError.rejectedByModel
+              }
+              return model
+            }
+          }
+          init?(draft: Draft) {
+            guard let title = draft.title else {
+              return nil
+            }
+            guard let author = draft.author.make() else {
+              return nil
+            }
+            self.title = title
+            self.author = author
+          }
+        }
+        """,
+      macros: [
+        "Draft": DraftMacro.self,
+        "DraftNested": DraftNestedMacro.self,
+      ],
+      indentationWidth: .spaces(2)
+    )
+  }
+
   @Test("generates model and explicit draft defaults")
   func defaultFieldExpansion() {
     assertMacroExpansion(
@@ -351,6 +435,38 @@ struct DraftMacroTests {
       macros: [
         "Draft": DraftMacro.self,
         "DraftDefault": DraftDefaultMacro.self,
+      ],
+      indentationWidth: .spaces(2)
+    )
+  }
+
+  @Test("diagnoses a nested ignored property")
+  func nestedIgnoredProperty() {
+    assertMacroExpansion(
+      """
+      @Draft
+      struct Book {
+        @DraftNested
+        @DraftIgnored
+        var author: Author = Author()
+      }
+      """,
+      expandedSource: """
+        struct Book {
+          var author: Author = Author()
+        }
+        """,
+      diagnostics: [
+        DiagnosticSpec(
+          message: "@DraftNested cannot be combined with @DraftIgnored",
+          line: 3,
+          column: 3
+        )
+      ],
+      macros: [
+        "Draft": DraftMacro.self,
+        "DraftIgnored": DraftIgnoredMacro.self,
+        "DraftNested": DraftNestedMacro.self,
       ],
       indentationWidth: .spaces(2)
     )

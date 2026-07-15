@@ -44,6 +44,36 @@ Apply ``DraftRequired()`` when an optional property must be explicitly set.
 Assigning `nil` then counts as filling the field, while `unset(_:)` marks it as
 missing again.
 
+### Edit nested models
+
+Apply ``DraftNested()`` to a property whose model type also uses ``Draft()``.
+A non-optional nested model becomes a non-optional empty nested draft, while an
+optional model becomes an optional nested draft:
+
+```swift
+@Draft
+struct Author {
+  var name: String
+}
+
+@Draft
+struct Book {
+  var title: String
+  @DraftNested var author: Author
+}
+
+var draft = Book.Draft()
+draft.title = "Nested drafts"
+draft.author.name = "Taylor"
+
+let book = try draft.makeOrThrow()
+```
+
+The parent reports an incomplete nested value as its own field, such as
+`.author`. ``DraftRequired()`` can require an explicit choice for an optional
+nested model; assigning `nil` counts as that choice. Model initializers and
+``DraftDefault(_:)`` values are converted into nested drafts automatically.
+
 ### Provide default values
 
 An initialized mutable model property keeps its declared type in the draft and

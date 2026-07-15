@@ -7,6 +7,7 @@ struct SwiftDraftPlugin: CompilerPlugin {
     DraftMacro.self,
     DraftDefaultMacro.self,
     DraftIgnoredMacro.self,
+    DraftNestedMacro.self,
     DraftRequiredMacro.self,
   ]
 }

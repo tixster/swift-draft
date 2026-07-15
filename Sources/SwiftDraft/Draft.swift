@@ -2,13 +2,14 @@
 ///
 /// Attach `@Draft` to a structure whose instance stored properties have explicit
 /// type annotations. The macro adds a nested `Draft` structure and a failable
-/// `init(draft:)` initializer to the model. Its editable fields are plain optional
-/// values, suitable for projected SwiftUI bindings. Model properties that are
-/// already optional do not block model creation unless marked with
-/// ``DraftRequired()``. Initialized mutable properties and properties marked
-/// with ``DraftDefault(_:)`` keep their declared type instead of gaining another
-/// optional layer. Protocol conformances written in the structure's inheritance
-/// clause are copied to the generated draft.
+/// `init(draft:)` initializer to the model. Its editable fields are plain values,
+/// suitable for projected SwiftUI bindings. Model properties that are already
+/// optional do not block model creation unless marked with ``DraftRequired()``.
+/// Initialized mutable properties and properties marked with ``DraftDefault(_:)``
+/// keep their declared type instead of gaining another optional layer. Use
+/// ``DraftNested()`` to edit a model property recursively through its own draft.
+/// Protocol conformances written in the structure's inheritance clause are
+/// copied to the generated draft.
 @attached(extension, names: arbitrary)
 public macro Draft() =
   #externalMacro(
@@ -37,6 +38,19 @@ public macro DraftDefault<Value>(_ value: Value) =
   #externalMacro(
     module: "SwiftDraftMacros",
     type: "DraftDefaultMacro"
+  )
+
+/// Edits a nested model through its generated draft.
+///
+/// The property's model type must also use ``Draft()``. A non-optional nested
+/// model becomes a non-optional empty nested draft, while an optional nested
+/// model becomes an optional nested draft. Model creation recursively validates
+/// and converts the nested value.
+@attached(peer)
+public macro DraftNested() =
+  #externalMacro(
+    module: "SwiftDraftMacros",
+    type: "DraftNestedMacro"
   )
 
 /// Requires an optional model property to be explicitly set before a draft can

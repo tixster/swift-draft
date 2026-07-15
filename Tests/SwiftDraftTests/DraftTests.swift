@@ -118,6 +118,76 @@ private struct ThrowingValidatedModel: Equatable {
   }
 }
 
+@Draft
+private struct NestedAuthor: Equatable, Hashable, Codable, Sendable {
+  var name: String
+  var nickname: String?
+}
+
+@Draft
+private struct NestedBook: Equatable, Hashable, Codable, Sendable {
+  var title: String
+  @DraftNested let author: NestedAuthor
+}
+
+@Draft
+private struct OptionalNestedBook: Equatable {
+  @DraftNested var author: NestedAuthor?
+}
+
+@Draft
+private struct RequiredOptionalNestedBook: Equatable, Codable {
+  @DraftRequired
+  @DraftNested
+  var author: NestedAuthor? = NestedAuthor(
+    name: "Model default",
+    nickname: nil
+  )
+}
+
+@Draft
+private struct NestedDefaultsModel: Equatable {
+  static let modelAuthor = NestedAuthor(
+    name: "Model default",
+    nickname: nil
+  )
+  static let draftEditor = NestedAuthor(
+    name: "Draft default",
+    nickname: "Editor"
+  )
+  static let optionalReviewer: NestedAuthor? = NestedAuthor(
+    name: "Optional default",
+    nickname: nil
+  )
+
+  @DraftNested
+  var author: NestedAuthor = Self.modelAuthor
+
+  @DraftNested
+  @DraftDefault(Self.draftEditor)
+  var editor: NestedAuthor
+
+  @DraftNested
+  var reviewer: NestedAuthor? = Self.optionalReviewer
+}
+
+@Draft
+private struct ValidatedNestedAuthor: Equatable {
+  var name: String
+
+  init?(draft: Draft) {
+    guard let name = draft.name, !name.isEmpty else {
+      return nil
+    }
+    self.name = name
+  }
+}
+
+@Draft
+private struct ValidatedNestedBook: Equatable {
+  @DraftNested var author: ValidatedNestedAuthor
+}
+
 @Suite("Draft")
 struct DraftTests {
   @Test("creates and restores a complete draft")
@@ -355,6 +425,156 @@ struct DraftTests {
     let data = try JSONEncoder().encode(draft)
     let decoded = try JSONDecoder().decode(SomeModel.Draft.self, from: data)
     #expect(decoded == draft)
+  }
+
+  @Test("creates and restores a nested draft")
+  func nestedDraft() throws {
+    var draft = NestedBook.Draft()
+
+    #expect(!draft.isComplete)
+    #expect(draft.missingFields == [.title, .author])
+
+    draft.title = "Nested models"
+    draft.author.name = "Taylor"
+
+    #expect(draft.isComplete)
+    let model = try draft.makeOrThrow()
+    #expect(
+      model
+        == NestedBook(
+          title: "Nested models",
+          author: NestedAuthor(name: "Taylor", nickname: nil)
+        )
+    )
+
+    draft.author.unset(\.name)
+    #expect(draft.missingFields == [.author])
+    #expect(draft.make() == nil)
+
+    let seeded = NestedBook.Draft(from: model)
+    #expect(seeded.author.name == "Taylor")
+    #expect(seeded.isComplete)
+    #expect(seeded.make() == model)
+
+    requireCommonConformances(seeded)
+    let data = try JSONEncoder().encode(seeded)
+    let decoded = try JSONDecoder().decode(
+      NestedBook.Draft.self,
+      from: data
+    )
+    #expect(decoded == seeded)
+  }
+
+  @Test("supports an optional nested draft")
+  func optionalNestedDraft() throws {
+    var draft = OptionalNestedBook.Draft()
+
+    #expect(draft.author == nil)
+    #expect(draft.isComplete)
+    #expect(try draft.makeOrThrow() == OptionalNestedBook(author: nil))
+    #expect(OptionalNestedBook(draft: draft) == OptionalNestedBook(author: nil))
+
+    draft.author = NestedAuthor.Draft()
+    #expect(!draft.isComplete)
+    #expect(draft.missingFields == [.author])
+    #expect(OptionalNestedBook(draft: draft) == nil)
+
+    draft.author?.name = "Taylor"
+    #expect(draft.isComplete)
+    #expect(
+      draft.make()
+        == OptionalNestedBook(
+          author: NestedAuthor(name: "Taylor", nickname: nil)
+        )
+    )
+    #expect(
+      OptionalNestedBook(draft: draft)
+        == OptionalNestedBook(
+          author: NestedAuthor(name: "Taylor", nickname: nil)
+        )
+    )
+
+    draft.unset(\.author)
+    #expect(draft.isComplete)
+    #expect(draft.make() == OptionalNestedBook(author: nil))
+  }
+
+  @Test("can require an optional nested draft explicitly")
+  func requiredOptionalNestedDraft() throws {
+    var draft = RequiredOptionalNestedBook.Draft()
+
+    #expect(draft.author == nil)
+    #expect(!draft.isComplete)
+    #expect(draft.missingFields == [.author])
+
+    draft.author = nil
+    #expect(draft.isComplete)
+    #expect(
+      draft.make()
+        == RequiredOptionalNestedBook(author: nil)
+    )
+
+    let data = try JSONEncoder().encode(draft)
+    let decoded = try JSONDecoder().decode(
+      RequiredOptionalNestedBook.Draft.self,
+      from: data
+    )
+    #expect(decoded.isComplete)
+    #expect(decoded.make() == RequiredOptionalNestedBook(author: nil))
+
+    draft.author = NestedAuthor.Draft()
+    #expect(!draft.isComplete)
+
+    draft.author?.name = "Taylor"
+    #expect(draft.isComplete)
+
+    draft.unset(\.author)
+    #expect(!draft.isComplete)
+
+    let seeded = RequiredOptionalNestedBook.Draft(
+      from: RequiredOptionalNestedBook(author: nil)
+    )
+    #expect(seeded.isComplete)
+    #expect(seeded.make() == RequiredOptionalNestedBook(author: nil))
+  }
+
+  @Test("converts model and explicit defaults into nested drafts")
+  func nestedDefaults() throws {
+    let draft = NestedDefaultsModel.Draft()
+
+    #expect(draft.author.name == "Model default")
+    #expect(draft.editor.name == "Draft default")
+    #expect(draft.editor.nickname == "Editor")
+    #expect(draft.reviewer?.name == "Optional default")
+    #expect(draft.isComplete)
+
+    let model = try draft.makeOrThrow()
+    #expect(model.author == NestedDefaultsModel.modelAuthor)
+    #expect(model.editor == NestedDefaultsModel.draftEditor)
+    #expect(model.reviewer == NestedDefaultsModel.optionalReviewer)
+
+    let changed = NestedDefaultsModel(
+      author: NestedAuthor(name: "Changed author", nickname: nil),
+      editor: NestedAuthor(name: "Changed editor", nickname: nil)
+    )
+    let seeded = NestedDefaultsModel.Draft(from: changed)
+
+    #expect(seeded.author.name == "Changed author")
+    #expect(seeded.editor.name == "Changed editor")
+  }
+
+  @Test("maps nested model rejection to parent rejection")
+  func rejectedNestedDraft() {
+    var draft = ValidatedNestedBook.Draft()
+    draft.author.name = ""
+
+    #expect(draft.isComplete)
+    #expect(draft.make() == nil)
+    #expect(
+      throws: ValidatedNestedBook.Draft.ValidationError.rejectedByModel
+    ) {
+      try draft.makeOrThrow()
+    }
   }
 }
 
