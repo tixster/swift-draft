@@ -4,7 +4,7 @@
 [![Release](https://img.shields.io/github/v/release/tixster/swift-draft)](https://github.com/tixster/swift-draft/releases/latest)
 [![Swift 6.3](https://img.shields.io/badge/Swift-6.3-F05138?logo=swift&logoColor=white)](https://www.swift.org)
 [![SwiftPM](https://img.shields.io/badge/SwiftPM-compatible-brightgreen?logo=swift&logoColor=white)](https://www.swift.org/package-manager)
-[![Platforms](https://img.shields.io/badge/Platforms-Apple-lightgrey?logo=apple)](https://github.com/tixster/swift-draft)
+[![Platforms](https://img.shields.io/badge/Platforms-Apple%20%7C%20Linux-lightgrey?logo=swift)](https://github.com/tixster/swift-draft)
 [![License](https://img.shields.io/github/license/tixster/swift-draft)](https://github.com/tixster/swift-draft/blob/main/LICENSE)
 
 `SwiftDraft` generates an editable draft type for a Swift model.
@@ -154,7 +154,7 @@ The initializer may be failable, non-failable, or throwing. `makeOrThrow()` repo
 ## Requirements
 
 - Swift 6.3+
-- iOS 13+, macOS 10.15+, tvOS 13+, watchOS 6+, or visionOS 1+
+- iOS 13+, macOS 10.15+, tvOS 13+, watchOS 6+, visionOS 1+, or Linux
 
 ## Development
 
